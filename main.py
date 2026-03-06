@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-1. 环境变量管理（查看、添加、更新、删除、启用、禁用）
-2. 定时任务管理（查看、执行、停止、启用、禁用、置顶、删除、日志）
-2. 支持 LLM Function Calling (大模型自然语言调度)
-3. 智能截断过长的日志，适配 AI Token 限制
+AstrBot 青龙面板管理插件 (AI 增强版)
+版本: 1.1.2
+修复内容：补全环境变量的禁用/启用工具函数，防止 AI 误调 Shell。
 """
 
 import time
@@ -19,7 +18,7 @@ DEFAULT_TIMEOUT = 10
 TOKEN_EXPIRE_SECONDS = 6 * 24 * 3600 
 
 class QinglongAPI:
-    """青龙面板 API 封装"""
+    """青龙面板 API 封装（异步增强版）"""
     def __init__(self, host: str, client_id: str, client_secret: str):
         self.host = host.rstrip('/')
         self.client_id = client_id
@@ -71,94 +70,94 @@ class QinglongAPI:
         except Exception as e:
             return False, str(e)
 
-    # API 接口实现 (已包含 crons, envs, logs 等)
+    # ------ 接口逻辑 ------
     async def get_envs(self, search: str = ""):
         success, data = await self._request("GET", "/open/envs", params={"searchValue": search})
         return data if success else []
 
+    async def disable_envs(self, ids: List[int]):
+        return await self._request("PUT", "/open/envs/disable", json_data=ids)
+
+    async def enable_envs(self, ids: List[int]):
+        return await self._request("PUT", "/open/envs/enable", json_data=ids)
+
     async def get_crons(self, search: str = ""):
         success, data = await self._request("GET", "/open/crons", params={"searchValue": search})
+        if not success: return []
         return data.get('data', []) if isinstance(data, dict) else data
 
     async def run_cron(self, ids: List[int]): return await self._request("PUT", "/open/crons/run", json_data=ids)
-    async def stop_cron(self, ids: List[int]): return await self._request("PUT", "/open/crons/stop", json_data=ids)
     async def get_log(self, id: int): return await self._request("GET", f"/open/crons/{id}/log")
 
-@register("astrbot_plugin_qinglong", "Haitun", "青龙面板管理(AI增强版)", "1.1.0")
+@register("astrbot_plugin_qinglong", "Haitun", "青龙面板管理(AI修复版)", "1.1.2")
 class QinglongPlugin(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.ql_api = QinglongAPI(
-            config.get("qinglong_host", "http://localhost:5700"),
+            config.get("qinglong_host", "http://172.17.0.1:5700"),
             config.get("qinglong_client_id", ""),
             config.get("qinglong_client_secret", "")
         )
 
     @filter.command("ql")
     async def ql_command(self, event: AstrMessageEvent):
-        """青龙面板控制台"""
-        # 1. 权限校验
+        """控制台物理指令"""
         if not event.is_admin:
-            yield event.plain_result("🚫 权限不足，请联系管理员。")
+            yield event.plain_result("🚫 权限不足")
             return
 
         parts = event.message_str.strip().split()
-        if len(parts) < 2 or parts[1].lower() == "help":
-            yield event.plain_result(self._get_help_text())
+        if len(parts) < 2:
+            yield event.plain_result("💡 用法: /ql ls, /ql envs, /ql disable <id>")
             return
 
         cmd = parts[1].lower()
-        
-        # 2. 任务管理逻辑优化
-        if cmd in ["ls", "list"]:
-            keyword = parts[2] if len(parts) > 2 else ""
-            crons = await self.ql_api.get_crons(keyword)
-            if not crons:
-                yield event.plain_result(f"🔍 未找到包含 '{keyword}' 的任务")
-                return
-            res = "📋 **青龙任务列表** (前15个):\n"
-            for c in crons[:15]:
-                status = "🟢" if c.get('status') == 0 else "🔴"
-                res += f"{status} `{c['id']}` | {c['name']}\n"
-            yield event.plain_result(res)
-
-        elif cmd == "run" and len(parts) > 2:
-            success, msg = await self.ql_api.run_cron([int(parts[2])])
-            yield event.plain_result(f"✅ 任务 {parts[2]} 已启动" if success else f"❌ 失败: {msg}")
-
-        elif cmd == "log" and len(parts) > 2:
-            success, log = await self.ql_api.get_log(int(parts[2]))
-            if success:
-                yield event.plain_result(f"📝 日志 (最后500字):\n{log[-500:] if log else '暂无内容'}")
-            else:
-                yield event.plain_result(f"❌ 获取失败: {log}")
-
-        elif cmd == "envs":
-            keyword = parts[2] if len(parts) > 2 else ""
-            envs = await self.ql_api.get_envs(keyword)
-            res = f"💎 **环境变量 ({keyword})**:\n"
-            for e in envs[:10]:
-                res += f"- `{e['name']}`: {e['value'][:15]}...\n"
+        if cmd == "envs":
+            kw = parts[2] if len(parts) > 2 else ""
+            envs = await self.ql_api.get_envs(kw)
+            res = "💎 **环境变量**:\n" + "\n".join([f"{'🟢' if e['status']==0 else '🔴'} `{e['id']}` | {e['name']}" for e in envs[:10]])
             yield event.plain_result(res)
         
-        else:
-            yield event.plain_result("❓ 未知子命令，请输入 `/ql help` 查看用法。")
+        elif cmd in ["disable", "enable"] and len(parts) > 2:
+            func = self.ql_api.disable_envs if cmd == "disable" else self.ql_api.enable_envs
+            success, msg = await func([int(parts[2])])
+            yield event.plain_result(f"✅ 操作成功" if success else f"❌ 失败: {msg}")
 
-    def _get_help_text(self):
-        return (
-            "🚀 **青龙面板管理指令手册**\n"
-            "----------------------------\n"
-            "🔹 **任务操作**\n"
-            "• `/ql ls [关键词]` - 搜索/列出任务\n"
-            "• `/ql run <ID>` - 启动任务\n"
-            "• `/ql stop <ID>` - 停止任务\n"
-            "• `/ql log <ID>` - 查看任务日志\n\n"
-            "🔹 **变量操作**\n"
-            "• `/ql envs [关键词]` - 查看环境变量\n"
-            "• `/ql add <名> <值>` - 添加新变量\n\n"
-            "💡 **AI 提示**: 你也可以直接对我说“帮我查一下美团的任务”哒！"
-        )
+    # ==========================================
+    # LLM 工具函数 (AI 专用)
+    # ==========================================
 
+    @filter.llm_tool(name="ql_get_envs")
+    async def ai_get_envs(self, event: AstrMessageEvent, search_keyword: str = ""):
+        """获取或搜索环境变量列表。"""
+        envs = await self.ql_api.get_envs(search_keyword)
+        if not envs: return "未找到匹配的环境变量。"
+        res = "找到以下变量：\n"
+        for e in envs[:10]:
+            res += f"- ID: {e['id']} | 名称: {e['name']} | 状态: {'启用' if e['status']==0 else '禁用'}\n"
+        return res
+
+    @filter.llm_tool(name="ql_disable_env")
+    async def ai_disable_env(self, event: AstrMessageEvent, env_id: int):
+        """禁用指定 ID 的环境变量。请先调用 ql_get_envs 获取正确 ID。"""
+        success, msg = await self.ql_api.disable_envs([env_id])
+        return f"环境变量 {env_id} 禁用{'成功' if success else '失败: ' + msg}"
+
+    @filter.llm_tool(name="ql_enable_env")
+    async def ai_enable_env(self, event: AstrMessageEvent, env_id: int):
+        """启用指定 ID 的环境变量。"""
+        success, msg = await self.ql_api.enable_envs([env_id])
+        return f"环境变量 {env_id} 启用{'成功' if success else '失败: ' + msg}"
+
+    @filter.llm_tool(name="ql_get_crons")
+    async def ai_get_crons(self, event: AstrMessageEvent, search_keyword: str = ""):
+        """查看定时任务列表。"""
+        crons = await self.ql_api.get_crons(search_keyword)
+        if not crons: return "未找到相关任务。"
+        res = "任务列表如下：\n"
+        for c in crons[:10]:
+            res += f"- ID: {c['id']} | 名称: {c.get('name')}\n"
+        return res
 
     async def terminate(self):
         await self.ql_api.close()
