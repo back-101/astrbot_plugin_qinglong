@@ -1,0 +1,17 @@
+{
+  "qinglong_host": {
+    "type": "string",
+    "default": "http://localhost:5700",
+    "description": "青龙面板地址"
+  },
+  "qinglong_client_id": {
+    "type": "string",
+    "default": "",
+    "description": "青龙面板应用ID（在青龙面板系统设置-应用设置中创建）"
+  },
+  "qinglong_client_secret": {
+    "type": "string",
+    "default": "",
+    "description": "青龙面板应用密钥"
+  }
+}
